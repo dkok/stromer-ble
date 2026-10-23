@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stromer ST1 BLE Explorer</title>
+<style>
+:root{font-family:system-ui,-apple-system,sans-serif;color-scheme:dark;background:#101820;color:#eaf0f4}body{max-width:850px;margin:auto;padding:18px}h1{font-size:1.6rem;margin-bottom:4px}p{color:#b5c4ce}.panel{background:#1b2933;border:1px solid #344653;border-radius:14px;padding:16px;margin:14px 0}button{border:0;border-radius:9px;padding:12px 15px;background:#36b4ca;color:#06191d;font-weight:700;margin:4px 5px 4px 0}button:disabled{opacity:.35}button.secondary{background:#354d5c;color:#fff}.state{font-weight:700}.muted{color:#9fb3c0;font-size:.86rem}.value{overflow-wrap:anywhere;background:#0e171e;padding:10px;border-radius:8px;white-space:pre-wrap;font:13px/1.5 ui-monospace,monospace}code{overflow-wrap:anywhere}#log{max-height:360px;overflow:auto}small{color:#a9bdc9}.entry{border-bottom:1px solid #31414a;padding:9px 0}.entry time{color:#9fb3c0} .error{color:#ffb4aa}
+</style></head>
+<body>
+<h1>🚲 Stromer ST1 BLE Explorer</h1><p>Read-only Bluetooth-experiment voor jouw ST1. Er worden geen commando's naar de fiets geschreven.</p>
+<div class="panel"><div>Status: <span id="status" class="state">Niet verbonden</span></div><p id="deviceName" class="muted">Open in Chrome op Android via HTTPS.</p><button id="connect">Verbinden</button><button id="disconnect" class="secondary" disabled>Verbreken</button><button id="read" class="secondary" disabled>Lees beide uit</button></div>
+<div id="characteristics"></div>
+<div class="panel"><h2>Log</h2><button id="clear" class="secondary">Wis log</button><button id="copy" class="secondary">Kopieer log</button><div id="log" aria-live="polite"></div></div>
+<script>
+'use strict';
+const SERVICE='f1798195-d8a7-4629-bcbb-8b5d9f7de9a4';
+const IDS=[['Characteristic 1','8375883d-4bde-4253-93b2-003d3a6e10a0'],['Characteristic 2','d123b338-59a2-44d1-88a8-fa1dc6b0fd9c']];
+const $=id=>document.getElementById(id);
+let device=null,server=null,chars=new Map(),entries=[];
+const setStatus=s=>{$('status').textContent=s};
+function log(message,error=false){const stamp=new Date().toLocaleTimeString('nl-NL');entries.push(`[${stamp}] ${message}`);const item=document.createElement('div');item.className='entry'+(error?' error':'');item.textContent=`[${stamp}] ${message}`;$('log').prepend(item)}
+function decode(value){const bytes=new Uint8Array(value.buffer,value.byteOffset,value.byteLength);return {hex:Array.from(bytes,b=>b.toString(16).padStart(2,'0').toUpperCase()).join('-'),ascii:Array.from(bytes,b=>b>=32&&b<=126?String.fromCharCode(b):'.').join(''),length:bytes.length,decimal:Array.from(bytes).join(', ')}}
+function show(id,value,source){const data=decode(value);$(id+'-data').textContent=`${source} • ${new Date().toLocaleTimeString('nl-NL')}\n${data.length} bytes\nHEX: ${data.hex}\nASCII: ${data.ascii}\nDEC: ${data.decimal}`;log(`${id} ${source}: ${data.hex}`)}
+function disconnected(){chars.clear();server=null;$('read').disabled=true;$('disconnect').disabled=true;IDS.forEach((_,i)=>{$('read'+i).disabled=true;$('notify'+i).disabled=true;$('notify'+i).textContent='Start notifications'});setStatus('Niet verbonden');log('Verbinding verbroken')}
+IDS.forEach(([label,uuid],i)=>{const panel=document.createElement('div');panel.className='panel';panel.innerHTML=`<h2>${label}</h2><p class="muted"><code>${uuid}</code></p><button id="read${i}" disabled>Uitlezen</button><button id="notify${i}" class="secondary" disabled>Start notifications</button><div id="c${i}-data" class="value">Nog geen data</div>`;$('characteristics').append(panel)});
+$('connect').onclick=async()=>{if(!navigator.bluetooth){log('Web Bluetooth niet beschikbaar. Gebruik Chrome op Android via HTTPS.',true);return}try{$('connect').disabled=true;setStatus('Apparaat kiezen…');device=await navigator.bluetooth.requestDevice({filters:[{name:'STROMER ST1'}],optionalServices:[SERVICE]});device.addEventListener('gattserverdisconnected',disconnected);$('deviceName').textContent=device.name||'Onbekend apparaat';setStatus('Verbinden…');server=await device.gatt.connect();const service=await server.getPrimaryService(SERVICE);for(let i=0;i<IDS.length;i++){const [label,uuid]=IDS[i];try{const ch=await service.getCharacteristic(uuid);chars.set(i,ch);$('read'+i).disabled=!ch.properties.read;$('notify'+i).disabled=!ch.properties.notify;ch.addEventListener('characteristicvaluechanged',event=>show('c'+i,event.target.value,'NOTIFY'));log(`${label} gevonden (read=${ch.properties.read}, notify=${ch.properties.notify})`)}catch(e){log(`${label} niet beschikbaar: ${e.message}`,true)}}$('read').disabled=false;$('disconnect').disabled=false;setStatus('Verbonden');log('Verbonden met '+device.name)}catch(e){setStatus('Niet verbonden');log(`Verbindingsfout: ${e.message}`,true);if(device?.gatt?.connected)device.gatt.disconnect()}finally{$('connect').disabled=false}};
+async function readOne(i){const ch=chars.get(i);if(!ch)return;try{show('c'+i,await ch.readValue(),'READ')}catch(e){log(`Leesfout characteristic ${i+1}: ${e.message}`,true)}}
+IDS.forEach((_,i)=>{$('read'+i).onclick=()=>readOne(i);$('notify'+i).onclick=async()=>{const ch=chars.get(i);if(!ch)return;try{if(ch._listening){await ch.stopNotifications();ch._listening=false;$('notify'+i).textContent='Start notifications';log(`Notifications ${i+1} gestopt`)}else{await ch.startNotifications();ch._listening=true;$('notify'+i).textContent='Stop notifications';log(`Notifications ${i+1} gestart`)}}catch(e){log(`Notification-fout ${i+1}: ${e.message}`,true)}}});
+$('read').onclick=async()=>{for(let i=0;i<IDS.length;i++)await readOne(i)};
+$('disconnect').onclick=()=>{if(device?.gatt?.connected)device.gatt.disconnect();else disconnected()};
+$('clear').onclick=()=>{entries=[];$('log').replaceChildren()};
+$('copy').onclick=async()=>{try{await navigator.clipboard.writeText(entries.join('\n'));log('Log gekopieerd')}catch(e){log('Kopiëren mislukt: '+e.message,true)}};
+</script></body></html>
