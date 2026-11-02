@@ -13,6 +13,65 @@
 <div id="characteristics"></div>
 <div class="panel"><h2>Berichtdecoder</h2><p class="hint">Kies een ontvangen bericht of plak HEX uit je log. De veldindeling is experimenteel: interpretaties zijn geen bevestigde Stromer-protocolspecificatie.</p><label for="source">Ontvangen bericht</label><select id="source" style="max-width:100%;margin:8px 0;padding:8px;background:#0e171e;color:#eaf0f4;border:1px solid #48606e"><option value="">Handmatig geplakte HEX</option></select><textarea id="hexinput" placeholder="Plak hier HEX, bijvoorbeeld 1F-AD-00-04-3F-19-99-9A-00-00"></textarea><div><button id="analyze">Analyseer HEX</button><button id="export" class="secondary">Exporteer JSON</button></div><p id="analysisSummary" class="hint"></p><div id="decoded" class="tablewrap"></div></div>
 <div class="panel"><h2>Log</h2><button id="clear" class="secondary">Wis log</button><button id="copy" class="secondary">Kopieer log</button><div id="log" aria-live="polite"></div></div>
+<script id="stromer-protocol-parser">
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  root.StromerProtocol = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  const TOTAL_DISTANCE_TAG = 0x00001F4C;
+
+  function bytesOf(value) {
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) {
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    throw new TypeError('Response is geen ArrayBuffer of DataView');
+  }
+
+  function parseTotalDistanceResponse(value) {
+    const bytes = bytesOf(value);
+    if (bytes.length < 2) {
+      throw new Error(`Antwoord te kort voor lengteheader: ${bytes.length} bytes`);
+    }
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const declaredLength = view.getUint16(0, false);
+    if (declaredLength !== bytes.length) {
+      throw new Error(`Lengteheader is ${declaredLength}, maar ${bytes.length} bytes ontvangen`);
+    }
+    if (bytes.length !== 13) {
+      throw new Error(`Onverwachte TotalDistance-responslengte: ${bytes.length} (verwacht 13)`);
+    }
+
+    // De officiële TLVDecoder slaat byte 2 over. Hij valideert deze byte niet
+    // voor normale responses; 0x5A wordt alleen herkend in een te kort
+    // foutbericht. Bewaar de byte daarom als metadata, zonder allowlist.
+    const header = bytes[2];
+    const tag = view.getUint32(3, false);
+    if (tag !== TOTAL_DISTANCE_TAG) {
+      throw new Error(`Onverwachte tag: 0x${tag.toString(16).padStart(8, '0').toUpperCase()} (verwacht 0x00001F4C)`);
+    }
+
+    const error = bytes[7];
+    if (error !== 0) {
+      throw new Error(`De fiets retourneerde foutcode ${error} voor TotalDistance`);
+    }
+
+    const valueLength = bytes[8];
+    if (valueLength !== 4) {
+      throw new Error(`Onverwachte veldlengte: ${valueLength} (verwacht 4)`);
+    }
+
+    const meters = view.getUint32(9, false);
+    return { bytes, header, tag, error, valueLength, meters, kilometers: meters / 1000 };
+  }
+
+  return { TOTAL_DISTANCE_TAG, parseTotalDistanceResponse };
+});
+</script>
 <script>
 'use strict';
 const SERVICE='f1798195-d8a7-4629-bcbb-8b5d9f7de9a4';
@@ -34,21 +93,7 @@ function parseHex(raw){const tokens=raw.match(/(?:0x)?[0-9a-fA-F]{2}(?![0-9a-fA-
 function hexOf(bytes){return Array.from(bytes,b=>b.toString(16).padStart(2,'0').toUpperCase()).join('-')}
 function bytesOf(value){return new Uint8Array(value.buffer,value.byteOffset,value.byteLength)}
 function parseTotalDistanceResponse(value){
- const bytes=bytesOf(value);
- if(bytes.length<2)throw Error(`Antwoord te kort voor lengteheader: ${bytes.length} bytes`);
- const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
- const declaredLength=view.getUint16(0,false);
- if(declaredLength!==bytes.length)throw Error(`Lengteheader is ${declaredLength}, maar ${bytes.length} bytes ontvangen`);
- if(bytes.length!==13)throw Error(`Onverwachte TotalDistance-responslengte: ${bytes.length} (verwacht 13)`);
- if(bytes[2]!==0x00)throw Error(`Onverwachte berichtheader: 0x${bytes[2].toString(16).padStart(2,'0').toUpperCase()} (verwacht 0x00)`);
- const tag=view.getUint32(3,false);
- if(tag!==TOTAL_DISTANCE_TAG)throw Error(`Onverwachte tag: 0x${tag.toString(16).padStart(8,'0').toUpperCase()} (verwacht 0x00001F4C)`);
- const error=bytes[7];
- if(error!==0)throw Error(`De fiets retourneerde foutcode ${error} voor TotalDistance`);
- const valueLength=bytes[8];
- if(valueLength!==4)throw Error(`Onverwachte veldlengte: ${valueLength} (verwacht 4)`);
- const meters=view.getUint32(9,false);
- return {bytes,meters,kilometers:meters/1000};
+ return StromerProtocol.parseTotalDistanceResponse(value);
 }
 async function writeGetRequest(ch,request){
  if(ch.properties.write&&typeof ch.writeValueWithResponse==='function')return ch.writeValueWithResponse(request);
